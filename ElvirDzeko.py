@@ -336,8 +336,8 @@ class DeepQAgent(object):
         self._trainer = Trainer(criterion, (criterion, None), l_sgd, self._metrics_writer)
         test = self._action_value_net
         testi = self._target_net
-        if os.path.isfile('./cnnNetwork_Checkpoint.dnn.ckp') and os.path.isfile('./targetNetwork_Checkpoint.dnn.ckp'):
-            self._action_value_net = load_model("cnnNetwork_Checkpoint.dnn")
+        if os.path.isfile('./cnnNetwork_Checkpoint.dnn.ckp'):
+
             self._action_value_net = self._trainer.restore_from_checkpoint(cnnSaveFile)
             criterion = self._trainer.restore_from_checkpoint(cnnSaveFile)
             #self._target_net = load_model("targetNetwork_Checkpoint.dnn")
