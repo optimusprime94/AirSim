@@ -19,7 +19,7 @@ import os
 import csv
 
 cnnSaveFile = "cnnNetwork_Checkpoint.dnn"
-targetSaveFile = "targetNetwork_Checkpoint.dnn"
+
 
 class ReplayMemory(object):
     """
