@@ -3,8 +3,6 @@ from AirSimClient import *
 from argparse import ArgumentParser
 
 import numpy as np
-import pandas as pd
-from pandas import DataFrame
 from cntk.core import Value
 from cntk.initializer import he_uniform
 from cntk.layers import Sequential, Convolution2D, Dense, default_options
@@ -14,13 +12,18 @@ from cntk.logging import TensorBoardProgressWriter, time
 from cntk.ops import abs, argmax, element_select, less, relu, reduce_max, reduce_sum, square
 from cntk.ops.functions import CloneMethod, Function, load_model
 from cntk.train import Trainer
+from pandas import DataFrame
+from openpyxl import Workbook
+import math
+
+import xlsxwriter
 
 import os
 import csv
 
 cnnSaveFile = "cnnNetwork_Checkpoint.dnn"
-
-
+cnnSaveFileLeftGoal = "cnnNetwork_CheckpointLeftGoal.dnn"
+cnnSaveFileRightGoal = "cnnNetwork_CheckpointRightGoal.dnn"
 class ReplayMemory(object):
     """
     ReplayMemory keeps track of the environment dynamic.
@@ -260,7 +263,7 @@ class DeepQAgent(object):
     """
 #mini orgi = 32
     def __init__(self, input_shape, nb_actions,
-                 gamma=0.99, explorer=LinearEpsilonAnnealingExplorer(1, 0.1, 1000000),
+                     gamma=0.99, explorer=LinearEpsilonAnnealingExplorer(1, 0.1, 1000), #start, end, steps 100000
                  learning_rate=0.00001, momentum=0.95, minibatch_size=16,
                  memory_size=500000, train_after=10000, train_interval=4, target_update_interval=10000,
                  monitor=True):
@@ -334,14 +337,13 @@ class DeepQAgent(object):
                                                          model=criterion) if monitor else None
         self._learner = l_sgd
         self._trainer = Trainer(criterion, (criterion, None), l_sgd, self._metrics_writer)
-        test = self._action_value_net
-        testi = self._target_net
-        if os.path.isfile('./cnnNetwork_Checkpoint.dnn.ckp'):
+# if os.path.isfile('./cnnNetwork_CheckpointRightGoal.dnn'):
+        # if os.path.isfile('./cnnNetwork_Checkpoint.dnn'):
+        #if os.path.isfile('./cnnNetwork_CheckpointLeftGoal.dnn')
+        if os.path.isfile('./cnnNetwork_CheckpointLeftGoal.dnn'):
+            self._trainer.restore_from_checkpoint(cnnSaveFile)
+            test = self._action_value_net
 
-            self._action_value_net = self._trainer.restore_from_checkpoint(cnnSaveFile)
-            criterion = self._trainer.restore_from_checkpoint(cnnSaveFile)
-            #self._target_net = load_model("targetNetwork_Checkpoint.dnn")
-            self._target_net = self._trainer.restore_from_checkpoint(targetSaveFile)
 
     def act(self, state):
 
@@ -361,28 +363,20 @@ class DeepQAgent(object):
             action = self._explorer(self.nb_actions)
         else:
             # Use the network to output the best action
-            #här får vi problem då history är 0
-            print("from network if history is not 0: history ", self._history.value.all())
-            if self._history.value.all() == 0:
-                env_with_history = self._history.value
+            #print("from network if history is not 0: history ", self._history.value.all())
+            #if self._history.value.all() == 0:
+            env_with_history = self._history.value
+            print("from network!")
+            q_values = self._action_value_net.eval(
+                # Append batch axis with only one sample to evaluate
+                env_with_history.reshape((1,) + env_with_history.shape)
+            )
 
-                print("from network!")
-                #här får vi att "dict" inte innehåller eval då dict är tom ({})
-                """ med load_model() får vi error, nätet ser ut som sådan(Composite(pre_states: Tensor[4,84,84], actions: Tensor[7], post_states: Tensor[4,84,84],
-                rewards: np.float32, terminals: np.float32) -> Tuple[np.float32, np.float32, np.float32]"""
-                q_values = self._action_value_net.eval(
-                    # Append batch axis with only one sample to evaluate
-                    env_with_history.reshape((1,) + env_with_history.shape)
-                )
-
-                self._episode_q_means.append(np.mean(q_values))
-                self._episode_q_stddev.append(np.std(q_values))
+            self._episode_q_means.append(np.mean(q_values))
+            self._episode_q_stddev.append(np.std(q_values))
 
             # Return the value maximizing the expected reward
-                action = q_values.argmax()
-
-            action = self._explorer(self.nb_actions)
-
+            action = q_values.argmax()
         # Keep track of interval action counter
         self._num_actions_taken += 1
         return action
@@ -423,7 +417,6 @@ class DeepQAgent(object):
         """
 
         agent_step = self._num_actions_taken
-        #self._trainer.restore_from_checkpoint(filename)
         if agent_step >= self._train_after:
             if (agent_step % self._train_interval) == 0:
                 pre_states, actions, post_states, rewards, terminals = self._memory.minibatch(self._minibatch_size)
@@ -471,7 +464,8 @@ def transform_input(responses):
 
 
 def interpret_action(action):
-    scaling_factor = 0.25
+    #only used to get forward or stop other actions is not used
+    scaling_factor = 0.5  #0.25
     if action == 0:
         quad_offset = (0, 0, 0) #x,y,z
     elif action == 1:
@@ -479,20 +473,21 @@ def interpret_action(action):
     elif action == 2:
         quad_offset = (0, scaling_factor, 0)
     elif action == 3:
-        quad_offset = (0, 0, scaling_factor)
+        quad_offset = (0, -scaling_factor, 0)#(0, 0, scaling_factor)
     elif action == 4:
-        quad_offset = (-scaling_factor, 0, 0)
+        quad_offset = (0, 0, scaling_factor)
     elif action == 5:
-        quad_offset = (0, -scaling_factor, 0)
+        quad_offset = (0, 0, 0)
     elif action == 6:
-        quad_offset = (0, 0, -scaling_factor)
-
+        quad_offset = (0, 0, -scaling_factor) #(0, 0, -scaling_factor)
     return quad_offset
 
-def compute_reward(quad_state, quad_vel, collision_info, goal_state, old_dist):
+def compute_reward(quad_state, quad_vel, collision_info,collision, goal_state, old_dist):
     thresh_dist = 7
     beta = 1
+
     z = -10
+    # z test
     zt = 0
 
     pts = [np.array([-.55265, -31.9786, zt]), np.array([48.59735, -63.3286, zt]),
@@ -506,59 +501,115 @@ def compute_reward(quad_state, quad_vel, collision_info, goal_state, old_dist):
 
     print('current distance: ', new_distance)
     print('old distance: ', old_dist)
-    if collision_info.has_collided:
+    if collision_info.has_collided or collision:
         reward = -100
     else:
-        dist = 10000000
-        for i in range(0, len(pts) - 1):
-            dist = min(dist, np.linalg.norm(np.cross((quad_pt - pts[i]), (quad_pt - pts[i + 1]))) / np.linalg.norm(
-                pts[i] - pts[i + 1]))
+        """ dist = 10000000
+ for i in range(0, len(pts) - 1):
+     dist = min(dist, np.linalg.norm(np.cross((quad_pt - pts[i]), (quad_pt - pts[i + 1]))) / np.linalg.norm(
+         pts[i] - pts[i + 1]))"""
 
         drone_position = client.getPosition()
         drone_velocity = client.getVelocity()
+        #living penalty
 
         if drone_position == goal_state:
             living_reward = 1000
         else:
             living_reward = -10
+        #velocity reward
         if drone_velocity == 0:
-            reward_velocity = -5
-        else:
             reward_velocity = 0
+        else:
+            reward_velocity = 10
+        #distance reward
         if new_distance < old_dist:
             dist_reward = 10
         else:
-            dist_reward = -10
-        reward_dist = (math.exp(-beta * dist) - 0.5)
-        reward_speed = (np.linalg.norm([quad_vel.x_val, quad_vel.y_val, quad_vel.z_val]) - 0.7)
-        reward = reward_dist + reward_speed + dist_reward + living_reward + reward_velocity
-
+            dist_reward = -12
+        reward_dist = 0  #(math.exp(-beta * dist) - 0.5)
+        #reward_speed = (np.linalg.norm([quad_vel.x_val, quad_vel.y_val, quad_vel.z_val]) - 0.7)
+        reward = reward_dist + dist_reward + living_reward + reward_velocity
+    """+ reward_speed """
     return reward, new_distance
-
-
-
 
 def isDone(reward):
     done = 0
     if reward <= -10:
         done = 1
     return done
+def writeOutput(current_step,totalReward ,totalCollisions, totTime):
+    lstOutputCurrent.append(current_step)
+    lstOutputTotalRew.append(totalReward)
+    lstOutputAvgRew.append(totalReward/current_step)
+    lstOutputTotCollision.append(totalCollisions)
+    lstOutputTotTime.append(totTime)
+    #output
+    lstOutputToExcel.append(lstOutputCurrent)
+    lstOutputToExcel.append(lstOutputTotalRew)
+    lstOutputToExcel.append(lstOutputAvgRew)
+    lstOutputToExcel.append(lstOutputTotCollision)
+    lstOutputToExcel.append(lstOutputTotTime)
+    return lstOutputToExcel
 
+def straight(duration, speed):
+    pitch, roll, yaw = client.getPitchRollYaw()
+    vx = math.cos(yaw) * speed
+    vy = math.sin(yaw) * speed
+    client.moveByVelocityZ(vx, vy, -6, duration, DrivetrainType.ForwardOnly)
+    start = time.time()
+    return start, duration
+
+def yaw_right(duration):
+    client.rotateByYawRate(30, duration)
+    start = time.time()
+    return start, duration
+
+def yaw_left(duration):
+    client.rotateByYawRate(-30, duration)
+    start = time.time()
+    return start, duration
+#initX = -.55265
+#initY = -60.0225  #vänstra korridoren -60
+#initZ = -5.0225
+#orginal värden
 initX = -.55265
 initY = -5.0225
 initZ = -5.0225
-
-_goal_state = [25.55265, -25.0225] #närmre goal state
+start = 0
+#test
+#initX = 10.55265
+#initY = -.0225
+#initZ = -5.0225
+#_goal_state = [25.55265, -25.0225] #short goal state
+#left goal
+_goal_state = [10, -60]
+#long goal
 #_goal_state = [221, 9.0]
+#right
+#_goal_state = [10, 60]
 _old_dist = 999
+actionUsed = False
+rotation = False
+collision = False
 #mätData
 totalReward = 0
 totalCollisions = 0
-
+#used for writing
+index = 0
+workbook = xlsxwriter.Workbook('experiment.xlsx')
+worksheet = workbook.add_worksheet()
+df = DataFrame(columns=['current_step', 'Total-Reward', 'Average-Reward', 'Total-Collisions', 'Elapsed-Time'])
+lstOutputToExcel = []
+lstOutputCurrent = []
+lstOutputTotalRew = []
+lstOutputAvgRew = []
+lstOutputTotCollision = []
+lstOutputTotTime = []
 
 saveCounter = 0
-start = time.time() #this will change
-start_duration = time.time() # this one will not
+dronestart = time.time()
+start_duration = time.time()
 
 # connect to the AirSim simulator
 client = MultirotorClient()
@@ -586,18 +637,70 @@ max_steps = epoch * 1
 responses = client.simGetImages([ImageRequest(3, AirSimImageType.DepthPerspective, True, False)])
 current_state = transform_input(responses)
 
+
+
+
 while True:
     action = agent.act(current_state)
-    quad_offset = interpret_action(action)
-    quad_vel = client.getVelocity()
-    # client.moveByVelocity(quad_vel.x_val+quad_offset[0], quad_vel.y_val+quad_offset[1], quad_vel.z_val+quad_offset[2], 5)
-    client.moveByVelocity(quad_vel.x_val + quad_offset[0], quad_vel.y_val + quad_offset[1], 0, 5)
+    #modification do be able to move more with the camera lägga in 2 och 3? så från den vanliga får den endast framåt/stanna?
+    if action == 4 or action == 6 or action == 2 or action == 3 or action == 1 or action == 5 or action == 0:
+        if action == 1 or action == 5 or action == 0:
+
+            start, duration = straight(1, 4)
+
+            while duration > time.time() - start:
+
+                if client.getCollisionInfo().has_collided:
+                    collision = True
+
+            #client.moveByVelocity(0, 0, 0, 1)
+
+            #client.rotateByYawRate(0, 1)
+            actionUsed = True
+        if action == 4 or action == 3:
+
+            start, duration = yaw_left(1)
+
+            while duration > time.time() - start:
+
+                #if self.getCollisionInfo().has_collided == True:
+                if client.getCollisionInfo().has_collided:
+                    collision = True
+
+            client.moveByVelocity(0, 0, 0, 1)
+
+            client.rotateByYawRate(0, 1)
+
+            actionUsed = True
+        else:
+
+            start, duration = yaw_right(0.8)
+
+            while duration > time.time() - start:
+
+                if client.getCollisionInfo().has_collided:
+                    collision = True
+
+            client.moveByVelocity(0, 0, 0, 1)
+
+            client.rotateByYawRate(0, 1)
+
+            actionUsed = True
+
+    #quad_offset = interpret_action(action)
+    #quad_vel = client.getVelocity()
+
+    #if actionUsed == False:
+    #    client.moveByVelocity(quad_vel.x_val + quad_offset[0], 0 + quad_offset[1], 0, 5,
+    #                          drivetrain= DrivetrainType.ForwardOnly)
+
     time.sleep(0.5)
 
     quad_state = client.getPosition()
     quad_vel = client.getVelocity()
     collision_info = client.getCollisionInfo()
-    reward, _old_dist = compute_reward(quad_state, quad_vel, collision_info, _goal_state, _old_dist)
+    reward, _old_dist = compute_reward(quad_state, quad_vel, collision_info,collision, _goal_state, _old_dist) #lägg till collision och
+    #kolla den samtidigt som colision_info.has_colided för att ge -100 för att ha krockat så vi inte krockar och den får positivt
     done = isDone(reward)
     print('Action, Reward, Done:', action, reward, done)
     totalReward += reward
@@ -609,36 +712,33 @@ while True:
     print("Seconds passed: ", end - start)
     # So we don't start the collision re-spawn process immediately: have a time delay,
     # then re-spawn with initial values and need to enable api control again :/
-    if collision_info.has_collided and (end - start >= 10):
+    if collision_info.has_collided or collision and (end - dronestart >= 10):
         totalCollisions += 1
-        start = time.time()
+        dronestart = time.time()
         client.reset()
         client.enableApiControl(True)
         client.armDisarm(True)
         client.moveToPosition(initX, initY, initZ, 5)
         time.sleep(0.5)
-
-        writer = pd.ExcelWriter('fancy.xlsx', engine='xlsxwriter')
-        df.to_excel(writer, index=False, sheet_name='report')
-
-        if current_step % 100 == 0 and current_step != 0:
-            df = DataFrame({'Steps': current_step,
-                            'Total-Reward': totalReward,
-                            'Average-Reward': totalReward / current_step,
-                            'Total-Collisions': totalCollisions,
-                            'Elapsed-Time': time.time() - start_duration})
-            df.to_excel('experiment.xlsx', sheet_name='experiment', index=False)
-            df.
+        collision = False
 
         if saveCounter == 20:
-            agent._trainer.save_checkpoint(cnnSaveFile)
+            agent._trainer.save_checkpoint(cnnSaveFileLeftGoal)
             saveCounter = 0
-
             print("Total Reward on 100 steps: ", totalReward)
             print("Amount of Collisions on 100 steps: ", totalCollisions)
-
+        if current_step % 10 == 0 and current_step != 0:
+            prev_step = 0
+            if current_step > prev_step:
+                totTime = time.time() - start_duration
+                test = writeOutput(current_step, totalReward, totalCollisions, totTime)
+                df = DataFrame({'current_step': test[0], 'Total-Reward': test[1], 'Avg-Reward': test[2],
+                                'TotalCollision': test[3], 'TotalTime': test[4]})
+                df.to_excel('experiment.xlsx', sheet_name='experiment', index=False)
         current_step += 1
         saveCounter += 1
+    actionUsed = False
 
     responses = client.simGetImages([ImageRequest(3, AirSimImageType.DepthPerspective, True, False)])
     current_state = transform_input(responses)
+
