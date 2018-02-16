@@ -639,7 +639,6 @@ current_state = transform_input(responses)
 
 
 
-
 while True:
     action = agent.act(current_state)
     #modification do be able to move more with the camera lägga in 2 och 3? så från den vanliga får den endast framåt/stanna?
